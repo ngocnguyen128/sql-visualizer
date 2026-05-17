@@ -89,6 +89,37 @@ def parse_sql_file(filepath: Path) -> dict:
 
 # ── 2. BUILD GRAPH DATA ───────────────────────────────────────────────────────
 
+def parse_sql_text(name: str, text: str) -> dict:
+    """Parse SQL từ string (dùng cho cả file lẫn DB content)."""
+    text = strip_comments(text)
+    creates = {m.group(1) for m in CREATE_RE.finditer(text)
+               if m.group(1).upper() not in IGNORE_NAMES}
+    uses = set()
+    for pattern in (FROM_RE, JOIN_RE, INSERT_RE, UPDATE_RE):
+        for m in pattern.finditer(text):
+            n = m.group(1)
+            if n.upper() not in IGNORE_NAMES and n not in creates:
+                uses.add(n)
+    return {"creates": creates, "uses": uses}
+
+
+def build_graph_from_contents(contents: dict) -> dict:
+    """
+    contents = {filename: sql_text, ...}
+    Dùng cho Streamlit file uploader (không có đường dẫn thật).
+    """
+    file_data = {}
+    all_tables: dict[str, dict] = defaultdict(lambda: {"created_by": [], "used_by": []})
+    for name, text in contents.items():
+        parsed = parse_sql_text(name, text)
+        file_data[name] = parsed
+        for tbl in parsed["creates"]:
+            all_tables[tbl]["created_by"].append(name)
+        for tbl in parsed["uses"]:
+            all_tables[tbl]["used_by"].append(name)
+    return {"files": file_data, "tables": dict(all_tables)}
+
+
 def build_graph(sql_dir: str) -> dict:
     sql_dir = Path(sql_dir)
     files = list(sql_dir.rglob("*.sql"))
@@ -113,103 +144,116 @@ def build_graph(sql_dir: str) -> dict:
 
 # ── 3. RENDER HTML ────────────────────────────────────────────────────────────
 
-def render_html(graph_data: dict, output_path: str):
-    net = Network(
-        height="95vh",
-        width="100%",
-        bgcolor="#1a1a2e",
-        font_color="#e0e0e0",
-        directed=True,
-    )
-    net.set_options(json.dumps({
-        "physics": {
-            "enabled": True,
-            "barnesHut": {
-                "gravitationalConstant": -8000,
-                "centralGravity": 0.3,
-                "springLength": 150,
-            }
-        },
-        "edges": {
-            "smooth": {"type": "curvedCW", "roundness": 0.2},
-            "arrows": {"to": {"enabled": True, "scaleFactor": 0.8}},
-        },
-        "interaction": {
-            "hover": True,
-            "tooltipDelay": 100,
-            "navigationButtons": True,
-            "keyboard": True,
+_VIS_OPTIONS = json.dumps({
+    "physics": {
+        "enabled": True,
+        "barnesHut": {
+            "gravitationalConstant": -8000,
+            "centralGravity": 0.3,
+            "springLength": 150,
         }
-    }))
+    },
+    "edges": {
+        "smooth": {"type": "curvedCW", "roundness": 0.2},
+        "arrows": {"to": {"enabled": True, "scaleFactor": 0.8}},
+    },
+    "interaction": {
+        "hover": True,
+        "tooltipDelay": 100,
+        "navigationButtons": True,
+        "keyboard": True,
+    }
+})
 
-    files = graph_data.get("files", {})
+# Màu node theo loại
+NODE_COLORS = {
+    "file":      {"background": "#4f8ef7", "border": "#2563eb"},
+    "table":     {"background": "#f97316", "border": "#c2410c"},
+    "procedure": {"background": "#a855f7", "border": "#7c3aed"},
+    "view":      {"background": "#10b981", "border": "#059669"},
+    "function":  {"background": "#06b6d4", "border": "#0891b2"},
+}
+
+NODE_SHAPES = {
+    "file": "box", "table": "ellipse",
+    "procedure": "diamond", "view": "hexagon", "function": "star",
+}
+
+
+def _build_network(graph_data: dict, height: str = "100%") -> "Network":
+    """Tạo pyvis Network từ graph_data. Dùng chung cho cả file và DB."""
+    net = Network(height=height, width="100%", bgcolor="#1a1a2e",
+                  font_color="#e0e0e0", directed=True)
+    net.set_options(_VIS_OPTIONS)
+
+    files  = graph_data.get("files", {})
     tables = graph_data.get("tables", {})
 
-    # Node: file SQL (xanh dương)
-    for fname in files:
-        creates_count = len(files[fname]["creates"])
-        uses_count = len(files[fname]["uses"])
-        tooltip = (
-            f"<b>{fname}</b><br>"
-            f"Tạo {creates_count} bảng, dùng {uses_count} bảng"
-        )
+    # ── nodes: files / procedures / views / functions ──
+    for fname, parsed in files.items():
+        ntype = parsed.get("node_type", "file")          # db_analyzer sẽ set "procedure" v.v.
+        creates_count = len(parsed["creates"])
+        uses_count    = len(parsed["uses"])
+        label = Path(fname).name if ntype == "file" else fname
+        tooltip = (f"<b>{label}</b><br>"
+                   f"Tạo {creates_count} đối tượng, dùng {uses_count} đối tượng")
         net.add_node(
-            f"file::{fname}",
-            label=Path(fname).name,
-            title=tooltip,
-            color={"background": "#4f8ef7", "border": "#2563eb"},
-            shape="box",
-            size=20,
-            font={"size": 13, "color": "#ffffff"},
+            f"file::{fname}", label=label, title=tooltip,
+            color=NODE_COLORS.get(ntype, NODE_COLORS["file"]),
+            shape=NODE_SHAPES.get(ntype, "box"),
+            size=20, font={"size": 13, "color": "#ffffff"},
         )
 
-    # Node: table (cam)
+    # ── nodes: tables ──
     for tbl, info in tables.items():
+        ttype    = info.get("node_type", "table")
         created_by = ", ".join(info["created_by"]) or "(không rõ)"
-        used_by = ", ".join(info["used_by"]) or "(không ai dùng)"
-        tooltip = (
-            f"<b>Table: {tbl}</b><br>"
-            f"Tạo bởi: {created_by}<br>"
-            f"Dùng bởi: {used_by}"
-        )
+        used_by    = ", ".join(info["used_by"])    or "(không ai dùng)"
+        tooltip = (f"<b>{'Table' if ttype == 'table' else 'Object'}: {tbl}</b><br>"
+                   f"Tạo bởi: {created_by}<br>Dùng bởi: {used_by}")
         net.add_node(
-            f"table::{tbl}",
-            label=tbl,
-            title=tooltip,
-            color={"background": "#f97316", "border": "#c2410c"},
-            shape="ellipse",
-            size=16,
-            font={"size": 12, "color": "#ffffff"},
+            f"table::{tbl}", label=tbl, title=tooltip,
+            color=NODE_COLORS.get(ttype, NODE_COLORS["table"]),
+            shape=NODE_SHAPES.get(ttype, "ellipse"),
+            size=16, font={"size": 12, "color": "#ffffff"},
         )
 
-    # Edge: CREATE (xanh lá)
+    # ── edges ──
+    existing_nodes = {n["id"] for n in net.nodes}
     for fname, parsed in files.items():
         for tbl in parsed["creates"]:
-            net.add_edge(
-                f"file::{fname}",
-                f"table::{tbl}",
-                color="#22c55e",
-                title="CREATE",
-                width=2,
-                label="CREATE",
-                font={"size": 9, "color": "#22c55e"},
-            )
-
-    # Edge: USE (đỏ, từ bảng → file để phân biệt chiều)
-    for fname, parsed in files.items():
+            if f"table::{tbl}" in existing_nodes:
+                net.add_edge(f"file::{fname}", f"table::{tbl}",
+                             color="#22c55e", title="CREATE", width=2,
+                             label="CREATE", font={"size": 9, "color": "#22c55e"})
         for tbl in parsed["uses"]:
-            if f"table::{tbl}" in [n["id"] for n in net.nodes]:
-                net.add_edge(
-                    f"table::{tbl}",
-                    f"file::{fname}",
-                    color="#f43f5e",
-                    title="USED BY",
-                    width=1.5,
-                    dashes=True,
-                    label="USE",
-                    font={"size": 9, "color": "#f43f5e"},
-                )
+            if f"table::{tbl}" in existing_nodes:
+                net.add_edge(f"table::{tbl}", f"file::{fname}",
+                             color="#f43f5e", title="USED BY", width=1.5,
+                             dashes=True, label="USE",
+                             font={"size": 9, "color": "#f43f5e"})
+    return net
 
+
+def render_html_string(graph_data: dict) -> str:
+    """Trả về HTML string (dùng cho Streamlit st.components.v1.html)."""
+    import tempfile, os
+    net = _build_network(graph_data, height="100%")
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False,
+                                     mode="w", encoding="utf-8") as f:
+        tmp = f.name
+    net.write_html(tmp)
+    content = Path(tmp).read_text(encoding="utf-8")
+    os.unlink(tmp)
+    # inject click + search JS
+    if "</body>" in content:
+        content = content.replace("</body>", CLICK_HIGHLIGHT_JS + "\n</body>", 1)
+    return content
+
+
+def render_html(graph_data: dict, output_path: str):
+    """CLI: ghi ra file HTML."""
+    net = _build_network(graph_data, height="95vh")
     net.write_html(output_path)
     _inject_click_highlight(output_path)
     print(f"\n✓ Đã xuất: {output_path}")
