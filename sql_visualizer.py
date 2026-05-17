@@ -219,6 +219,31 @@ def render_html(graph_data: dict, output_path: str):
 
 CLICK_HIGHLIGHT_JS = """
 <style>
+  /* ── Search box ── */
+  #search-wrap {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 999; display: flex; align-items: center; gap: 6px;
+  }
+  #search-input {
+    width: 280px; padding: 8px 14px;
+    background: rgba(20,20,40,0.95); border: 1px solid #4f8ef7;
+    border-radius: 20px; color: #fff; font: 14px sans-serif;
+    outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  #search-input::placeholder { color: #556; }
+  #search-input:focus { border-color: #7eb3ff; box-shadow: 0 0 0 3px rgba(79,142,247,0.25); }
+  #search-clear {
+    background: #334; border: none; border-radius: 50%; color: #aaa;
+    width: 28px; height: 28px; cursor: pointer; font-size: 16px;
+    display: none; align-items: center; justify-content: center;
+  }
+  #search-clear:hover { background: #445; color: #fff; }
+  #search-count {
+    font: 12px sans-serif; color: #7eb3ff; white-space: nowrap;
+    min-width: 80px; text-align: left; display: none;
+  }
+
+  /* ── Legend ── */
   #legend {
     position: fixed; top: 14px; right: 14px; z-index: 999;
     background: rgba(20,20,40,0.92); border: 1px solid #334;
@@ -227,6 +252,8 @@ CLICK_HIGHLIGHT_JS = """
   #legend b { color: #fff; display: block; margin-bottom: 6px; font-size: 14px; }
   #legend .row { display: flex; align-items: center; margin: 4px 0; gap: 8px; }
   #legend .dot { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+
+  /* ── Hint ── */
   #hint {
     position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
     background: rgba(20,20,40,0.85); border: 1px solid #334;
@@ -235,6 +262,14 @@ CLICK_HIGHLIGHT_JS = """
   }
 </style>
 
+<!-- Search -->
+<div id="search-wrap">
+  <input id="search-input" type="text" placeholder="🔍  Tìm tên bảng hoặc file SQL..." spellcheck="false" />
+  <button id="search-clear" title="Xóa">✕</button>
+  <span id="search-count"></span>
+</div>
+
+<!-- Legend -->
 <div id="legend">
   <b>SQL Dependency Map</b>
   <div class="row"><div class="dot" style="background:#4f8ef7;border:2px solid #2563eb"></div> File SQL</div>
@@ -242,15 +277,15 @@ CLICK_HIGHLIGHT_JS = """
   <div class="row"><div style="width:28px;height:2px;background:#22c55e"></div> CREATE</div>
   <div class="row"><div style="width:28px;height:2px;background:#f43f5e;border-top:2px dashed #f43f5e"></div> USED BY</div>
 </div>
+
 <div id="hint">Click node để highlight liên kết &nbsp;·&nbsp; Click nền để reset</div>
 
 <script>
 window.addEventListener('load', function () {
-  // pyvis khởi tạo xong sau ~300ms
   setTimeout(function () {
     if (typeof network === 'undefined' || typeof nodes === 'undefined') return;
 
-    // ── lưu màu gốc ──
+    // ── lưu màu gốc ──────────────────────────────────────────────
     var origNode = {};
     nodes.forEach(function (n) {
       origNode[n.id] = {
@@ -262,74 +297,137 @@ window.addEventListener('load', function () {
     edges.forEach(function (e) {
       origEdge[e.id] = {
         color: typeof e.color === 'string'
-          ? e.color
-          : JSON.parse(JSON.stringify(e.color || {})),
+          ? e.color : JSON.parse(JSON.stringify(e.color || {})),
         font:  JSON.parse(JSON.stringify(e.font || {})),
         width: e.width || 1,
         dashes: e.dashes || false,
       };
     });
 
-    var highlighted = false;
+    var DIM_NODE  = { color: { background: '#252535', border: '#353550' }, font: { color: '#44445a' } };
+    var DIM_EDGE  = { color: { color: '#2a2a40', opacity: 0.2 }, font: { color: '#2a2a40' }, width: 0.5, dashes: false };
+    var RING_NODE = { color: { background: '#fef08a', border: '#facc15' }, font: { color: '#1a1a2e' } }; // vàng: kết quả search
 
+    var mode = 'none'; // 'none' | 'click' | 'search'
+
+    // ── helpers ──────────────────────────────────────────────────
+    function dimAll() {
+      nodes.update(nodes.getIds().map(function(id){ return Object.assign({id:id}, DIM_NODE); }));
+      edges.update(edges.getIds().map(function(id){ return Object.assign({id:id}, DIM_EDGE); }));
+    }
+
+    function restoreAll() {
+      nodes.update(nodes.getIds().map(function(id){ return Object.assign({id:id}, origNode[id]); }));
+      edges.update(edges.getIds().map(function(id){ return Object.assign({id:id}, origEdge[id]); }));
+    }
+
+    function highlightGroup(centerIds) {
+      // centerIds: array of node ids cần highlight cùng với neighbors
+      var keepNodes = new Set();
+      var keepEdges = new Set();
+      centerIds.forEach(function(nodeId) {
+        keepNodes.add(nodeId);
+        network.getConnectedNodes(nodeId).forEach(function(n){ keepNodes.add(n); });
+        network.getConnectedEdges(nodeId).forEach(function(e){ keepEdges.add(e); });
+      });
+
+      nodes.update(nodes.getIds().map(function(id) {
+        if (!keepNodes.has(id)) return Object.assign({id:id}, DIM_NODE);
+        return { id:id, color: origNode[id].color, font: origNode[id].font };
+      }));
+      edges.update(edges.getIds().map(function(id) {
+        if (!keepEdges.has(id)) return Object.assign({id:id}, DIM_EDGE);
+        return { id:id, color: origEdge[id].color, font: origEdge[id].font,
+                 width: origEdge[id].width, dashes: origEdge[id].dashes };
+      }));
+
+      // thêm vòng vàng cho chính các node match
+      centerIds.forEach(function(id) {
+        nodes.update([Object.assign({id:id}, RING_NODE)]);
+      });
+    }
+
+    // ── CLICK ────────────────────────────────────────────────────
     network.on('click', function (params) {
+      if (mode === 'search') return; // search đang active → click không override
       if (params.nodes.length > 0) {
-        applyHighlight(params.nodes[0]);
-        highlighted = true;
+        highlightGroup([params.nodes[0]]);
+        mode = 'click';
         document.getElementById('hint').style.opacity = '0.4';
-      } else if (highlighted) {
-        resetAll();
-        highlighted = false;
+      } else if (mode === 'click') {
+        restoreAll();
+        mode = 'none';
         document.getElementById('hint').style.opacity = '1';
       }
     });
 
-    function applyHighlight(nodeId) {
-      var connNodes = new Set(network.getConnectedNodes(nodeId));
-      connNodes.add(nodeId);
-      var connEdges = new Set(network.getConnectedEdges(nodeId));
+    // ── SEARCH ───────────────────────────────────────────────────
+    var searchInput = document.getElementById('search-input');
+    var searchClear = document.getElementById('search-clear');
+    var searchCount = document.getElementById('search-count');
 
-      // nodes
-      nodes.update(nodes.getIds().map(function (id) {
-        if (connNodes.has(id)) {
-          return { id: id, color: origNode[id].color, font: origNode[id].font };
-        }
-        return {
-          id: id,
-          color: { background: '#252535', border: '#353550' },
-          font:  { color: '#44445a' },
-        };
-      }));
+    function doSearch(query) {
+      query = query.trim().toLowerCase();
+      if (!query) {
+        restoreAll();
+        mode = 'none';
+        searchClear.style.display = 'none';
+        searchCount.style.display = 'none';
+        document.getElementById('hint').style.opacity = '1';
+        return;
+      }
 
-      // edges
-      edges.update(edges.getIds().map(function (id) {
-        if (connEdges.has(id)) {
-          return {
-            id: id,
-            color: origEdge[id].color,
-            font:  origEdge[id].font,
-            width: origEdge[id].width,
-            dashes: origEdge[id].dashes,
-          };
-        }
-        return {
-          id: id,
-          color: { color: '#2a2a40', opacity: 0.2 },
-          font:  { color: '#2a2a40' },
-          width: 0.5,
-          dashes: false,
-        };
-      }));
+      searchClear.style.display = 'flex';
+      mode = 'search';
+      document.getElementById('hint').style.opacity = '0.3';
+
+      // tìm node có label chứa query
+      var matched = [];
+      nodes.forEach(function(n) {
+        var label = (n.label || '').toLowerCase();
+        if (label.includes(query)) matched.push(n.id);
+      });
+
+      if (matched.length === 0) {
+        dimAll();
+        searchCount.style.display = 'inline';
+        searchCount.textContent = 'Không tìm thấy';
+        searchCount.style.color = '#f87171';
+        return;
+      }
+
+      searchCount.style.display = 'inline';
+      searchCount.textContent = matched.length + ' kết quả';
+      searchCount.style.color = '#7eb3ff';
+
+      highlightGroup(matched);
+
+      // fit view vào các node match
+      network.fit({ nodes: matched, animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
     }
 
-    function resetAll() {
-      nodes.update(nodes.getIds().map(function (id) {
-        return Object.assign({ id: id }, origNode[id]);
-      }));
-      edges.update(edges.getIds().map(function (id) {
-        return Object.assign({ id: id }, origEdge[id]);
-      }));
+    searchInput.addEventListener('input', function() { doSearch(this.value); });
+
+    searchInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { clearSearch(); }
+    });
+
+    searchClear.addEventListener('click', clearSearch);
+
+    function clearSearch() {
+      searchInput.value = '';
+      doSearch('');
+      searchInput.focus();
     }
+
+    // Ctrl+F / Cmd+F → focus search
+    document.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+      }
+    });
 
   }, 400);
 });
