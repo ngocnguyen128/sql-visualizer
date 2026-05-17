@@ -19,12 +19,16 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  /* ẩn footer mặc định của Streamlit */
   footer { visibility: hidden; }
-  /* nút analyze full-width */
   div.stButton > button { width: 100%; }
+  /* Xóa padding mặc định quanh iframe để diagram chiếm tối đa diện tích */
+  iframe { border: none !important; }
+  section.main > div { padding-bottom: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
+
+# Chiều cao diagram (px) — tính theo viewport
+DIAGRAM_H = 760
 
 
 # ── Sidebar: legend + stats ───────────────────────────────────────────────────
@@ -100,7 +104,7 @@ with tab_file:
             if not graph_data or not graph_data.get("files"):
                 st.warning("Không tìm thấy bảng nào trong các file đã upload.")
             else:
-                st.session_state.graph_html = render_html_string(graph_data)
+                st.session_state.graph_html = render_html_string(graph_data, height_px=DIAGRAM_H)
                 st.session_state.stats = {
                     "files":  len(graph_data["files"]),
                     "tables": len(graph_data["tables"]),
@@ -127,7 +131,7 @@ with tab_file:
                     graph_data = build_graph(folder_path)
 
             if graph_data and graph_data.get("files"):
-                st.session_state.graph_html = render_html_string(graph_data)
+                st.session_state.graph_html = render_html_string(graph_data, height_px=DIAGRAM_H)
                 st.session_state.stats = {
                     "files":  len(graph_data["files"]),
                     "tables": len(graph_data["tables"]),
@@ -138,7 +142,7 @@ with tab_file:
     # ── Hiển thị diagram ──
     if "graph_html" in st.session_state:
         st.divider()
-        components.html(st.session_state.graph_html, height=680, scrolling=False)
+        components.html(st.session_state.graph_html, height=DIAGRAM_H + 20, scrolling=False)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -206,7 +210,7 @@ with tab_db:
                     if not graph_data or not graph_data.get("files"):
                         st.warning("Không tìm thấy stored procedure / view / function nào.")
                     else:
-                        st.session_state.graph_html_db = render_html_string(graph_data)
+                        st.session_state.graph_html_db = render_html_string(graph_data, height_px=DIAGRAM_H)
                         st.session_state.stats = {
                             "files":  len(graph_data["files"]),
                             "tables": len(graph_data["tables"]),
@@ -219,4 +223,4 @@ with tab_db:
         # ── Hiển thị diagram ──
         if "graph_html_db" in st.session_state:
             st.divider()
-            components.html(st.session_state.graph_html_db, height=680, scrolling=False)
+            components.html(st.session_state.graph_html_db, height=DIAGRAM_H + 20, scrolling=False)

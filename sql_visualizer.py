@@ -235,10 +235,10 @@ def _build_network(graph_data: dict, height: str = "100%") -> "Network":
     return net
 
 
-def render_html_string(graph_data: dict) -> str:
+def render_html_string(graph_data: dict, height_px: int = 750) -> str:
     """Trả về HTML string (dùng cho Streamlit st.components.v1.html)."""
     import tempfile, os
-    net = _build_network(graph_data, height="100%")
+    net = _build_network(graph_data, height=f"{height_px}px")
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False,
                                      mode="w", encoding="utf-8") as f:
         tmp = f.name
